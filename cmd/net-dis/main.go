@@ -1,4 +1,4 @@
-// Command net-tui performs a local-network default-credential audit.
+// Command net-dis performs a local-network default-credential audit.
 package main
 
 import (
@@ -48,7 +48,7 @@ func main() {
 	cfg := parseFlags()
 
 	if cfg.showVer {
-		fmt.Println("net-tui", version)
+		fmt.Println("net-dis", version)
 		return
 	}
 	if cfg.fetchCreds {
@@ -67,7 +67,7 @@ func main() {
 
 	store, warnings, err := creds.Load(cfg.credsDir)
 	if err != nil {
-		fatal(fmt.Errorf("%w\nhint: run `net-tui --fetch-creds` to download the credential lists", err))
+		fatal(fmt.Errorf("%w\nhint: run `net-dis --fetch-creds` to download the credential lists", err))
 	}
 	for _, w := range warnings {
 		fmt.Fprintln(os.Stderr, "warning:", w)
@@ -154,10 +154,10 @@ func parseFlags() cliConfig {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `net-tui %s - local network default-credential audit
+	fmt.Fprintf(os.Stderr, `net-dis %s - local network default-credential audit
 
 Usage:
-  net-tui [flags]
+  net-dis [flags]
 
 Common flags:
   --fetch-creds          download default credential lists into --creds
@@ -176,9 +176,9 @@ Common flags:
   --version              print version
 
 Examples:
-  sudo ./net-tui
-  ./net-tui --fetch-creds
-  ./net-tui --no-tui --target 192.168.1.0/24 --dry-run
+  sudo ./net-dis
+  ./net-dis --fetch-creds
+  ./net-dis --no-tui --target 192.168.1.0/24 --dry-run
 `, version)
 }
 
@@ -235,7 +235,7 @@ func (p *printer) emit(ev model.Event) {
 }
 
 func runHeadless(cfg cliConfig, store *creds.Store, exec *priv.Exec) {
-	fmt.Printf("net-tui %s - local network default-credential audit\n", version)
+	fmt.Printf("net-dis %s - local network default-credential audit\n", version)
 	if !cfg.yes {
 		fmt.Println("Only scan networks you own or have explicit permission to test.")
 		fmt.Print(`Type "yes" to continue: `)

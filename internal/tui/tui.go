@@ -562,7 +562,7 @@ func (m Model) View() string {
 
 func (m Model) viewConfirm() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("net-tui"))
+	b.WriteString(titleStyle.Render("net-dis"))
 	b.WriteString("  ")
 	b.WriteString(dimStyle.Render("local network default-credential audit"))
 	b.WriteString("\n\n")
@@ -635,7 +635,7 @@ func (m Model) headerView(width int) string {
 		phase = "Done"
 	}
 	percent := int(m.progress * 100)
-	left := titleStyle.Render("net-tui") + "  " + dimStyle.Render(phase)
+	left := titleStyle.Render("net-dis") + "  " + dimStyle.Render(phase)
 	right := fmt.Sprintf("%3d%%", percent)
 	gap := width - lipgloss.Width(left) - len(right) - 2
 	if gap < 1 {

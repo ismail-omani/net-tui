@@ -1,7 +1,7 @@
 .PHONY: build test vet creds clean
 
 build:
-	go build -o net-tui ./cmd/net-tui
+	go build -o net-dis ./cmd/net-dis
 
 test:
 	go test ./...
@@ -10,7 +10,7 @@ vet:
 	go vet ./...
 
 creds: build
-	./net-tui --fetch-creds
+	./net-dis --fetch-creds
 
 clean:
-	rm -f net-tui
+	rm -f net-dis

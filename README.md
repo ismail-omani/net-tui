@@ -1,4 +1,4 @@
-# net-tui
+# net-dis
 
 English | [Русский](README.ru.md)
 
@@ -31,7 +31,7 @@ checks whether they still accept factory-default credentials.
 ## Build
 
 ```bash
-go build -o net-tui ./cmd/net-tui
+go build -o net-dis ./cmd/net-dis
 # or
 make build
 ```
@@ -40,16 +40,16 @@ make build
 
 ```bash
 # 1. Download the default-credential lists into data/creds/
-./net-tui --fetch-creds
+./net-dis --fetch-creds
 
 # 2. Start the TUI
-./net-tui
+./net-dis
 
 # Headless: discovery + nmap only, no login attempts
-./net-tui --no-tui --yes --dry-run --target 192.168.1.0/24
+./net-dis --no-tui --yes --dry-run --target 192.168.1.0/24
 
 # Headless full audit
-./net-tui --no-tui --yes --target 192.168.1.0/24
+./net-dis --no-tui --yes --target 192.168.1.0/24
 ```
 
 When started without `--target`, the tool inspects `ip -j a`, discards loopback and inactive
@@ -60,7 +60,7 @@ you to choose one.
 keeps it in memory only. If sudo is unavailable or you press `Esc`, the tool continues
 unprivileged: `nmap -sn` + `-sT -sV` (no MAC/OUI vendor and no OS detection). If your system
 forbids passing the sudo password over stdin (`requiretty`), run the whole application as root:
-`sudo ./net-tui`.
+`sudo ./net-dis`.
 
 ## TUI controls
 
@@ -215,7 +215,7 @@ make build
 Structure:
 
 ```
-cmd/net-tui/        CLI, headless mode
+cmd/net-dis/        CLI, headless mode
 internal/tui/       Bubble Tea interface
 internal/engine/    phase orchestration, probe planning
 internal/scan/      arp-scan and nmap (XML parsing)
