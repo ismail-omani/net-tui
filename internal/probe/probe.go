@@ -1,5 +1,5 @@
 // Package probe implements default-credential checks for the protocols
-// supported by net-dis.
+// supported by net-tui.
 package probe
 
 import (

@@ -74,7 +74,7 @@ func rtspRequest(ctx context.Context, addr, uri, method, auth string, timeout ti
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s RTSP/1.0\r\n", method, uri)
 	b.WriteString("CSeq: 1\r\n")
-	b.WriteString("User-Agent: net-dis\r\n")
+	b.WriteString("User-Agent: net-tui\r\n")
 	b.WriteString("Accept: application/sdp\r\n")
 	if auth != "" {
 		fmt.Fprintf(&b, "Authorization: %s\r\n", auth)

@@ -1,4 +1,4 @@
-# net-dis
+# net-tui
 
 [English](README.md) | Русский
 
@@ -32,7 +32,7 @@ TUI-инструмент для аудита локальной сети: нах
 ## Сборка
 
 ```bash
-go build -o net-dis ./cmd/net-dis
+go build -o net-tui ./cmd/net-tui
 # или
 make build
 ```
@@ -41,16 +41,16 @@ make build
 
 ```bash
 # 1. Скачать списки дефолтных кредов в data/creds/
-./net-dis --fetch-creds
+./net-tui --fetch-creds
 
 # 2. Запустить TUI
-./net-dis
+./net-tui
 
 # headless, только обнаружение + nmap, без попыток логина
-./net-dis --no-tui --yes --dry-run --target 192.168.1.0/24
+./net-tui --no-tui --yes --dry-run --target 192.168.1.0/24
 
 # headless полный аудит
-./net-dis --no-tui --yes --target 192.168.1.0/24
+./net-tui --no-tui --yes --target 192.168.1.0/24
 ```
 
 При запуске без `--target` инструмент сам смотрит `ip -j a`, отбрасывает loopback и неактивные
@@ -60,7 +60,7 @@ make build
 только в памяти. Если sudo недоступен или вы нажали `Esc`, инструмент продолжает работу без
 привилегий: `nmap -sn` + `-sT -sV` (без MAC/вендора по OUI и без OS detection). Если в системе
 запрещён `sudo` с паролем через stdin (`requiretty`), запустите всё приложение целиком:
-`sudo ./net-dis`.
+`sudo ./net-tui`.
 
 ## Управление в TUI
 
@@ -212,7 +212,7 @@ make build
 Структура:
 
 ```
-cmd/net-dis/        CLI, headless-режим
+cmd/net-tui/        CLI, headless-режим
 internal/tui/       Bubble Tea интерфейс
 internal/engine/    оркестрация фаз, планирование проб
 internal/scan/      arp-scan и nmap (парсинг XML)

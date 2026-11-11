@@ -69,7 +69,7 @@ func ippRequest(ctx context.Context, base, login, password string, timeout time.
 			return 0, err
 		}
 		req.Header.Set("Content-Type", "application/ipp")
-		req.Header.Set("User-Agent", "net-dis")
+		req.Header.Set("User-Agent", "net-tui")
 		if login != "" || password != "" {
 			req.SetBasicAuth(login, password)
 		}
