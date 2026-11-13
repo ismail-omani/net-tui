@@ -163,7 +163,9 @@ existing files (exact duplicates are not added).
 - **HTTP form** — at least 2 signals are required: a new cookie, a redirect to another page, the
   password form disappearing, or success words such as `dashboard`/`logout`/`welcome`; failure
   words such as `invalid`/`incorrect`/`failed` must be absent. A single signal is treated as
-  uncertain and is **not** recorded;
+  uncertain and is **not** recorded. ZTE F680/ONT-style pages with inputs outside a `<form>` are
+  supported: the password is posted as `SHA256(password + UserRandomNum)` together with
+  `Frm_Loginchecktoken`, and failure messages inside inline scripts are detected as well;
 - **SSH** — successful `x/crypto/ssh` authentication (password or keyboard-interactive);
 - **Telnet** — a `login:`/`password:` prompt, credentials sent, and a shell prompt or welcome
   message, with no login errors (including IAC negotiation handling);

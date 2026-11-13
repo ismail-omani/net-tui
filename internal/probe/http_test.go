@@ -2,6 +2,8 @@ package probe
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -98,6 +100,70 @@ func TestHTTPNoFormReportsNote(t *testing.T) {
 	}
 	if joined := strings.Join(notes, "\n"); !strings.Contains(joined, "no login form") {
 		t.Fatalf("missing skip note, got %q", joined)
+	}
+}
+
+const zteLoginPage = `<html><head><title>F680</title><script>
+function passwordSHA256() {
+  var tokenElement = createHiddenInput("Frm_Loginchecktoken", "TESTTOKEN");
+  var randnumElement = createHiddenInput("UserRandomNum", "12345678");
+}
+</script></head><body>
+<input type="text" name="Username" id="Frm_Username">
+<input type="password" name="Password" id="Frm_Password">
+<input type="submit" id="LoginId" value="Login" onclick="dosubmit()">
+</body></html>`
+
+func TestHTTPZTEFormlessLogin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.SetCookie(w, &http.Cookie{Name: "_TESTCOOKIESUPPORT", Value: "1", Path: "/"})
+			fmt.Fprint(w, zteLoginPage)
+			return
+		}
+		r.ParseForm()
+		random := r.Form.Get("UserRandomNum")
+		sum := sha256.Sum256([]byte("s3cret" + random))
+		if r.Form.Get("action") == "login" &&
+			r.Form.Get("Frm_Loginchecktoken") == "TESTTOKEN" &&
+			r.Form.Get("Username") == "admin" &&
+			r.Form.Get("Password") == hex.EncodeToString(sum[:]) {
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: "session", Path: "/"})
+			fmt.Fprint(w, `<html><body>Welcome to the dashboard. <a href="/logout">logout</a></body></html>`)
+			return
+		}
+		fmt.Fprint(w, `<html><body><input type="password" name="Password" id="Frm_Password">
+<script>getObj("errmsg").innerHTML = "Информация пользователя не верна";</script></body></html>`)
+	}))
+	defer srv.Close()
+
+	finding, err := HTTP(context.Background(), testEnv(t, srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding == nil || finding.Login != "admin" || finding.Password != "s3cret" {
+		t.Fatalf("finding = %+v", finding)
+	}
+}
+
+func TestHTTPZTEFormlessFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			http.SetCookie(w, &http.Cookie{Name: "_TESTCOOKIESUPPORT", Value: "1", Path: "/"})
+			fmt.Fprint(w, zteLoginPage)
+			return
+		}
+		fmt.Fprint(w, `<html><body><input type="password" name="Password" id="Frm_Password">
+<script>getObj("errmsg").innerHTML = "Информация пользователя не верна";</script></body></html>`)
+	}))
+	defer srv.Close()
+
+	finding, err := HTTP(context.Background(), testEnv(t, srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %+v", finding)
 	}
 }
 

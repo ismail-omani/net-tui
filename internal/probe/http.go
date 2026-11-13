@@ -3,14 +3,19 @@ package probe
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,9 +32,27 @@ var failureWords = []string{
 	"access denied", "authentication failed", "login error", "bad password",
 }
 
+// failurePhrases also occur inside inline scripts, so they are checked against
+// the raw body too. Keep them specific: generic words like "invalid" are
+// present in the base64 helper scripts of many routers and would cause false
+// negatives on every attempt.
+var failurePhrases = []string{
+	"информация пользователя не верна",
+	"имя пользователя или пароль",
+	"неверный пароль",
+	"неверное имя пользователя",
+	"пользователь заблокирован",
+	"превышено количество попыток",
+	"密码错误",
+	"用户名或密码错误",
+	"登录失败",
+	"尝试次数过多",
+}
+
 var successWords = []string{
 	"logout", "sign out", "dashboard", "successfully", "main menu", "system status",
-	"device status", "administration",
+	"device status", "administration", "выход", "выход из системы", "завершить сеанс",
+	"главное меню", "состояние системы", "администрирование", "注销", "退出",
 }
 
 type httpPage struct {
@@ -151,7 +174,11 @@ func HTTP(ctx context.Context, env Env) (*model.Finding, error) {
 		env.notef("http: no login form at %s:%d (status %d), skipped", env.IP, env.Port, initial.status)
 		return nil, nil
 	}
-	env.notef("http: form login at %s (%d credentials)", loginURL, len(pairs))
+	kind := "html form"
+	if forms[0].jsLogin != "" {
+		kind = "JS form (" + forms[0].jsLogin + ")"
+	}
+	env.notef("http: %s login at %s (%d credentials)", kind, loginURL, len(pairs))
 	for _, c := range pairs {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -267,6 +294,12 @@ func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout ti
 		values.Set(form.userField, c.Login)
 	}
 	values.Set(form.passField, c.Password)
+	if form.jsLogin == "zte-sha256" {
+		random := zteRandom()
+		sum := sha256.Sum256([]byte(c.Password + random))
+		values.Set("UserRandomNum", random)
+		values.Set(form.passField, hex.EncodeToString(sum[:]))
+	}
 
 	var req *http.Request
 	if form.method == http.MethodPost {
@@ -297,11 +330,14 @@ func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout ti
 	result := &httpPage{status: resp.StatusCode, body: body, url: resp.Request.URL, header: resp.Header}
 
 	text := visibleText(result.body)
-	if containsAny(text, failureWords) {
+	if hasFailure(result.body, text) {
 		return false, false, nil
 	}
 	if result.status >= 500 {
 		return false, false, nil
+	}
+	if form.jsLogin == "zte-sha256" {
+		return zteSuccess(result, baseline, jar, cookiesBefore, text), false, nil
 	}
 
 	signals := 0
@@ -346,6 +382,10 @@ type formInfo struct {
 	userField string
 	passField string
 	fields    map[string]string
+	// jsLogin marks a login form that is created by JavaScript instead of a
+	// regular <form> element. Currently only the ZTE SHA256 scheme is
+	// supported, used by ZTE F680 and several related ONT models.
+	jsLogin string
 }
 
 var userFieldRe = regexp.MustCompile(`(?i)(user|login|account|email|usr|name)`)
@@ -428,7 +468,136 @@ func findForms(body []byte, base *url.URL) []formInfo {
 		out = append(out, form)
 		return true
 	})
+	if len(out) == 0 {
+		if form, ok := findFormlessLogin(body, doc, base); ok {
+			out = append(out, form)
+		}
+	}
 	return out
+}
+
+// findFormlessLogin handles pages such as the ZTE F680 where the username and
+// password inputs are not wrapped in a <form>. The page's JavaScript builds
+// the POST body on submit, so a plain HTML form heuristic never sees it.
+func findFormlessLogin(body []byte, doc *goquery.Document, base *url.URL) (formInfo, bool) {
+	pass := doc.Find("input[type='password']").First()
+	if pass.Length() == 0 {
+		return formInfo{}, false
+	}
+	passField, _ := pass.Attr("name")
+	if passField == "" {
+		passField, _ = pass.Attr("id")
+	}
+	if passField == "" {
+		return formInfo{}, false
+	}
+
+	var userField, firstText string
+	doc.Find("input").Each(func(_ int, in *goquery.Selection) {
+		name, _ := in.Attr("name")
+		typ, _ := in.Attr("type")
+		id, _ := in.Attr("id")
+		typ = strings.ToLower(strings.TrimSpace(typ))
+		if name == "" || name == passField {
+			return
+		}
+		switch typ {
+		case "text", "email", "tel", "":
+			if firstText == "" {
+				firstText = name
+			}
+			if userField == "" && (userFieldRe.MatchString(name) || userFieldRe.MatchString(id)) {
+				userField = name
+			}
+		}
+	})
+	if userField == "" {
+		userField = firstText
+	}
+
+	form := formInfo{
+		action:    base,
+		method:    http.MethodPost,
+		userField: userField,
+		passField: passField,
+		fields:    map[string]string{},
+	}
+	doc.Find("input[type='hidden']").Each(func(_ int, in *goquery.Selection) {
+		name, _ := in.Attr("name")
+		value, _ := in.Attr("value")
+		if name != "" {
+			form.fields[name] = value
+		}
+	})
+
+	raw := string(body)
+	if isZTELogin(raw) {
+		form.jsLogin = "zte-sha256"
+		form.fields["action"] = "login"
+		if _, ok := form.fields["Frm_Logintoken"]; !ok {
+			form.fields["Frm_Logintoken"] = "0"
+		}
+		if token := zteCheckToken(raw); token != "" {
+			form.fields["Frm_Loginchecktoken"] = token
+		}
+	}
+	return form, true
+}
+
+func isZTELogin(body string) bool {
+	return strings.Contains(body, "Frm_Username") &&
+		strings.Contains(body, "Frm_Password") &&
+		(strings.Contains(body, "UserRandomNum") || strings.Contains(body, "passwordSHA256"))
+}
+
+var zteTokenRe = regexp.MustCompile(`Frm_Loginchecktoken["']?\s*,\s*["']([^"']+)["']`)
+
+func zteCheckToken(body string) string {
+	if m := zteTokenRe.FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+// zteRandom returns the 8-digit UserRandomNum expected by the ZTE login
+// script. The password is sent as SHA256(password + UserRandomNum).
+func zteRandom() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(90000000))
+	if err != nil {
+		return strconv.FormatInt(time.Now().UnixNano()%90000000+10000000, 10)
+	}
+	return strconv.FormatInt(n.Int64()+10000000, 10)
+}
+
+func hasFailure(body []byte, text string) bool {
+	if containsAny(text, failureWords) {
+		return true
+	}
+	return containsAny(strings.ToLower(string(body)), failurePhrases)
+}
+
+// zteSuccess evaluates a ZTE login response. A failure page keeps the login
+// inputs and puts the error message only inside an inline script, which is why
+// hasFailure checks the raw body as well.
+func zteSuccess(result, baseline *httpPage, jar http.CookieJar, cookiesBefore int, text string) bool {
+	if result.status >= 300 && result.status < 400 {
+		return true
+	}
+	if result.url.String() != baseline.url.String() &&
+		!strings.Contains(strings.ToLower(result.url.Path), "login") {
+		return true
+	}
+	for _, c := range jar.Cookies(result.url) {
+		if c.Name != "_TESTCOOKIESUPPORT" {
+			return true
+		}
+	}
+	if !bytes.Contains(result.body, []byte("Frm_Password")) &&
+		!bytes.Contains(result.body, []byte("Frm_Username")) {
+		return true
+	}
+	baselineText := visibleText(baseline.body)
+	return containsAny(text, successWords) && !containsAny(baselineText, successWords)
 }
 
 func visibleText(body []byte) string {
