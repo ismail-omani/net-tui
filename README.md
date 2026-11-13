@@ -165,7 +165,11 @@ existing files (exact duplicates are not added).
   words such as `invalid`/`incorrect`/`failed` must be absent. A single signal is treated as
   uncertain and is **not** recorded. ZTE F680/ONT-style pages with inputs outside a `<form>` are
   supported: the password is posted as `SHA256(password + UserRandomNum)` together with
-  `Frm_Loginchecktoken`, and failure messages inside inline scripts are detected as well;
+  `Frm_Loginchecktoken`, and failure messages inside inline scripts are detected as well.
+  Jetty-based 4G modem pages (for example `4G Modem` on `192.168.43.1`) are also supported: the
+  visible `<form>` is only a decoy, so the tool reads the page's same-origin scripts, finds the
+  real JSON endpoint and posts `{"funcNo":1000,"username":...,"password":...}`, then checks the
+  `flag` field of the JSON reply;
 - **SSH** — successful `x/crypto/ssh` authentication (password or keyboard-interactive);
 - **Telnet** — a `login:`/`password:` prompt, credentials sent, and a shell prompt or welcome
   message, with no login errors (including IAC negotiation handling);

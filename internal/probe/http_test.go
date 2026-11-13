@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -156,6 +157,78 @@ func TestHTTPZTEFormlessFailure(t *testing.T) {
 		fmt.Fprint(w, `<html><body><input type="password" name="Password" id="Frm_Password">
 <script>getObj("errmsg").innerHTML = "Информация пользователя не верна";</script></body></html>`)
 	}))
+	defer srv.Close()
+
+	finding, err := HTTP(context.Background(), testEnv(t, srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %+v", finding)
+	}
+}
+
+const ajaxLoginPage = `<html><body>
+<form name="gotomain" action="main.html" method="post">
+<input type="text" name="username" id="username">
+<input type="password" name="password" id="password">
+<input type="button" id="login" value="Login">
+</form>
+<script src="/js/index.js"></script>
+<script src="/js/utils/ajax.js"></script>
+</body></html>`
+
+const ajaxIndexJS = `function login(){var param={funcNo:1000,username:user,password:pwd};
+request(param,function(data){ if(data.flag == "1") { window.location = "main.html"; } });}`
+
+const ajaxRequestJS = `function request(param){$.ajax({url: "/ajax", data: JSON.stringify(param), type: "post"});}`
+
+func ajaxLoginServer(t *testing.T, accept bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			fmt.Fprint(w, ajaxLoginPage)
+		case "/js/index.js":
+			fmt.Fprint(w, ajaxIndexJS)
+		case "/js/utils/ajax.js":
+			fmt.Fprint(w, ajaxRequestJS)
+		case "/ajax":
+			var payload struct {
+				FuncNo   int    `json:"funcNo"`
+				Username string `json:"username"`
+				Password string `json:"password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if accept && payload.FuncNo == 1000 && payload.Username == "admin" && payload.Password == "s3cret" {
+				fmt.Fprint(w, `{"results":[{"imei":"test"}],"error_info":"none","flag":"1"}`)
+				return
+			}
+			fmt.Fprint(w, `{"error_info":"username or password error!","flag":"0"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestHTTPAjaxJSONLogin(t *testing.T) {
+	srv := ajaxLoginServer(t, true)
+	defer srv.Close()
+
+	finding, err := HTTP(context.Background(), testEnv(t, srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding == nil || finding.Login != "admin" || finding.Password != "s3cret" {
+		t.Fatalf("finding = %+v", finding)
+	}
+}
+
+func TestHTTPAjaxJSONFailure(t *testing.T) {
+	srv := ajaxLoginServer(t, false)
 	defer srv.Close()
 
 	finding, err := HTTP(context.Background(), testEnv(t, srv.URL))

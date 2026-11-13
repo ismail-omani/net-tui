@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
@@ -239,13 +240,13 @@ func tryHTTPAuth(ctx context.Context, base string, challenges []string, c creds.
 }
 
 func discoverLoginPage(ctx context.Context, base string, initial *httpPage, timeout time.Duration) (string, []formInfo) {
-	if forms := findForms(initial.body, initial.url); len(forms) > 0 {
+	if forms, ok := loginForms(ctx, initial, timeout); ok {
 		return initial.url.String(), forms
 	}
 	if timeout > 3*time.Second {
 		timeout = 3 * time.Second
 	}
-	paths := []string{"login", "login.html", "cgi-bin/luci"}
+	paths := []string{"login", "login.html", "cgi-bin/luci", "login.gch"}
 	for _, p := range paths {
 		if ctx.Err() != nil {
 			return "", nil
@@ -259,11 +260,155 @@ func discoverLoginPage(ctx context.Context, base string, initial *httpPage, time
 		if err != nil || page.status >= 400 {
 			continue
 		}
-		if forms := findForms(page.body, page.url); len(forms) > 0 {
+		if forms, ok := loginForms(ctx, page, timeout); ok {
 			return page.url.String(), forms
 		}
 	}
 	return "", nil
+}
+
+// loginForms finds regular and formless login forms and upgrades known
+// JavaScript login schemes, including pages that hide the real request in an
+// external script file.
+func loginForms(ctx context.Context, page *httpPage, timeout time.Duration) ([]formInfo, bool) {
+	forms := findForms(page.body, page.url)
+	if len(forms) == 0 {
+		return nil, false
+	}
+	if ajax, ok := detectAjaxLogin(ctx, page, forms[0], timeout); ok {
+		return []formInfo{ajax}, true
+	}
+	return forms, true
+}
+
+// detectAjaxLogin looks through same-origin scripts for a JSON login request
+// such as the one used by Jetty-based 4G modem pages:
+//
+//	var param = {funcNo:1000, username:user, password:pwd};
+//	url: "http://192.168.43.1/ajax"
+//
+// The visible <form> on such pages is a decoy: it only navigates to main.html
+// and never checks the password.
+func detectAjaxLogin(ctx context.Context, page *httpPage, base formInfo, timeout time.Duration) (formInfo, bool) {
+	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(page.body))
+	if err != nil {
+		return formInfo{}, false
+	}
+
+	var inline []string
+	var external []string
+	doc.Find("script").Each(func(_ int, s *goquery.Selection) {
+		if src, ok := s.Attr("src"); ok {
+			ref, err := url.Parse(strings.TrimSpace(src))
+			if err != nil {
+				return
+			}
+			u := page.url.ResolveReference(ref)
+			if strings.EqualFold(u.Hostname(), page.url.Hostname()) {
+				external = append(external, u.String())
+			}
+			return
+		}
+		inline = append(inline, s.Text())
+	})
+
+	var scripts strings.Builder
+	for _, s := range inline {
+		scripts.WriteString(s)
+		scripts.WriteString("\n")
+	}
+	if timeout > 3*time.Second {
+		timeout = 3 * time.Second
+	}
+	for i, target := range external {
+		if i >= 12 || ctx.Err() != nil {
+			break
+		}
+		script, err := fetchPage(ctx, newHTTPClient(timeout, nil), target)
+		if err != nil || script.status >= 400 {
+			continue
+		}
+		scripts.Write(script.body)
+		scripts.WriteString("\n")
+		// Stop early once both halves of the AJAX login call are found.
+		if ajaxFuncNo(scripts.String()) != "" && ajaxEndpoint(scripts.String()) != "" {
+			break
+		}
+	}
+
+	scriptText := scripts.String()
+	funcNo := ajaxFuncNo(scriptText)
+	endpoint := ajaxEndpoint(scriptText)
+	if funcNo == "" || endpoint == "" {
+		return formInfo{}, false
+	}
+	ref, err := url.Parse(endpoint)
+	if err != nil {
+		return formInfo{}, false
+	}
+	action := page.url.ResolveReference(ref)
+	if !strings.EqualFold(action.Hostname(), page.url.Hostname()) {
+		return formInfo{}, false
+	}
+
+	base.action = action
+	base.method = http.MethodPost
+	base.jsLogin = "ajax-json"
+	base.fields = map[string]string{"funcNo": funcNo}
+	return base, true
+}
+
+var (
+	ajaxFuncNoRe = regexp.MustCompile(`funcNo\s*:\s*["']?(\d+)["']?`)
+	ajaxURLRe    = regexp.MustCompile(`url\s*:\s*["']([^"']+)["']`)
+)
+
+func ajaxFuncNo(script string) string {
+	if m := ajaxFuncNoRe.FindStringSubmatch(script); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
+func ajaxEndpoint(script string) string {
+	all := ajaxURLRe.FindAllStringSubmatch(script, -1)
+	for _, m := range all {
+		if len(m) > 1 && strings.Contains(strings.ToLower(m[1]), "ajax") {
+			return m[1]
+		}
+	}
+	if len(all) > 0 && len(all[0]) > 1 {
+		return all[0][1]
+	}
+	return ""
+}
+
+func ajaxLoginResult(body []byte) (bool, bool) {
+	var resp struct {
+		Flag any `json:"flag"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false, false
+	}
+	switch v := resp.Flag.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "true", "ok", "success":
+			return true, true
+		case "0", "false":
+			return false, true
+		}
+	case float64:
+		switch v {
+		case 1:
+			return true, true
+		case 0:
+			return false, true
+		}
+	case bool:
+		return v, true
+	}
+	return false, false
 }
 
 func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout time.Duration) (bool, bool, error) {
@@ -276,8 +421,8 @@ func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout ti
 	if err != nil {
 		return false, false, err
 	}
-	forms := findForms(baseline.body, baseline.url)
-	if len(forms) == 0 {
+	forms, ok := loginForms(ctx, baseline, timeout)
+	if !ok {
 		return false, false, nil
 	}
 	form := forms[0]
@@ -302,12 +447,38 @@ func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout ti
 	}
 
 	var req *http.Request
-	if form.method == http.MethodPost {
+	switch {
+	case form.jsLogin == "ajax-json":
+		payload := map[string]any{}
+		for k, v := range form.fields {
+			if k == "funcNo" {
+				if n, convErr := strconv.Atoi(v); convErr == nil {
+					payload[k] = n
+					continue
+				}
+			}
+			payload[k] = v
+		}
+		if form.userField != "" {
+			payload[form.userField] = c.Login
+		}
+		payload[form.passField] = c.Password
+		data, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return false, false, marshalErr
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, form.action.String(), bytes.NewReader(data))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Requested-With", "XMLHttpRequest")
+			req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
+		}
+	case form.method == http.MethodPost:
 		req, err = http.NewRequestWithContext(ctx, http.MethodPost, form.action.String(), strings.NewReader(values.Encode()))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
-	} else {
+	default:
 		u := *form.action
 		u.RawQuery = values.Encode()
 		req, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
@@ -328,6 +499,12 @@ func tryFormLogin(ctx context.Context, loginURL string, c creds.Cred, timeout ti
 		return false, false, readErr
 	}
 	result := &httpPage{status: resp.StatusCode, body: body, url: resp.Request.URL, header: resp.Header}
+
+	if form.jsLogin == "ajax-json" {
+		if ok, recognized := ajaxLoginResult(result.body); recognized {
+			return ok, false, nil
+		}
+	}
 
 	text := visibleText(result.body)
 	if hasFailure(result.body, text) {
